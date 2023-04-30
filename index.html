@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, user-scalable=no">
+        <!-- the line above, if uncommented, mostly makes a page mobile friendly without any further work needed, except it disables zoom on mobile -->
+        <script src="https://unpkg.com/@cmdcode/tapscript@1.2.7"></script>
+        <script src="https://unpkg.com/@cmdcode/crypto-utils@1.9.0"></script>
+        <script src="https://bundle.run/noble-secp256k1@1.2.14"></script>
+        <style>
+            * {
+                box-sizing: border-box;
+                font-size: 1.15rem;
+                font-family: Arial, sans-serif;
+            }
+            html {
+                max-width: 70ch;
+                padding: 3rem 1rem;
+                margin: auto;
+                line-height: 1.25;
+            }
+            h1 {
+                font-size: 2rem;
+            }
+            h2 {
+                font-size: 1.5rem;
+            }
+            input {
+                line-height: 1.25;
+                width: 100%;
+                height: 1.8rem;
+                font-size: 1.15rem;
+                border: 1px solid grey;
+            }
+            @media screen and (max-width: 600px) {
+            }
+        </style>
+        <script>
+            var $ = document.querySelector.bind( document );
+            var $$ = document.querySelectorAll.bind( document );
+            var url_params = new URLSearchParams( window.location.search );
+            var url_keys = url_params.keys();
+            var $_GET = {}
+            for ( var key of url_keys ) $_GET[ key ] = url_params.get( key );
+        </script>
+        <script>
+            function bytesToHex( bytes ) {
+                return bytes.reduce( ( str, byte ) => str + byte.toString( 16 ).padStart( 2, "0" ), "" );
+            }
+            var getContract = () => {
+                var privkey1 = bytesToHex(nobleSecp256k1.utils.randomPrivateKey());
+                var privkey2 = bytesToHex(nobleSecp256k1.utils.randomPrivateKey());
+                var KeyPair = cryptoUtils.KeyPair;
+                var seckey1 = new KeyPair(privkey1);
+                var pubkey1 = bytesToHex( seckey1.pub ).substring( 2 );
+                var seckey2 = new KeyPair(privkey2);
+                var pubkey2 = bytesToHex( seckey2.pub ).substring( 2 );
+                var ending_blockheight = 10;
+                var ending_timestamp = Math.floor( Date.now() / 1000 );
+                var scripts = [
+                    [ 
+                        ending_blockheight,
+                        'OP_CHECKSEQUENCEVERIFY',
+                        'OP_DROP',
+                        pubkey1,
+                        'OP_CHECKSIG'
+                    ],
+                    [ 
+                        ending_timestamp,
+                        'OP_CHECKSEQUENCEVERIFY',
+                        'OP_DROP',
+                        pubkey2,
+                        'OP_CHECKSIG'
+                    ]
+                ];
+
+                var tree = scripts.map(s => tapscript.Tap.encodeScript(s));
+
+                var index  = 0; //alternative: 1
+                var script = scripts[index];
+                var target = tapscript.Tap.encodeScript(script);
+                var pubkey = "ab".repeat( 32 );
+
+                var [ tpubkey, cblock ] = tapscript.Tap.getPubKey(pubkey, { tree, target });
+
+                var address = tapscript.Address.p2tr.fromPubKey(tpubkey, 'regtest');
+                console.log( "address:", address );
+
+                return {address, privkey1, pubkey1, privkey2, pubkey2, ending_blockheight, ending_timestamp};
+            }
+
+            var settleContract = (privkey, pubkey1, pubkey2, zero_or_one, destino, from_amount, to_amount, ending_blockheight, ending_timestamp, txid, vout) => {
+                var KeyPair = cryptoUtils.KeyPair;
+                var seckey = new KeyPair(privkey);
+                var pubkey = bytesToHex( seckey.pub ).substring( 2 );
+
+                var scripts = [
+                    [ 
+                        ending_blockheight,
+                        'OP_CHECKSEQUENCEVERIFY',
+                        'OP_DROP',
+                        pubkey1,
+                        'OP_CHECKSIG'
+                    ],
+                    [ 
+                        ending_timestamp,
+                        'OP_CHECKSEQUENCEVERIFY',
+                        'OP_DROP',
+                        pubkey2,
+                        'OP_CHECKSIG'
+                    ]
+                ];
+                var tree = scripts.map(s => tapscript.Tap.encodeScript(s));
+
+                var script = scripts[zero_or_one];
+                var target = tapscript.Tap.encodeScript(script);
+                var pubkey = "ab".repeat( 32 );
+
+                var [ tpubkey, cblock ] = tapscript.Tap.getPubKey(pubkey, { tree, target });
+                var sequence = ( zero_or_one ) ? ending_timestamp:ending_blockheight;
+
+                var address = tapscript.Address.p2tr.fromPubKey(tpubkey, 'regtest');
+
+                var txdata = tapscript.Tx.create({
+                  vin: [{
+                    txid: txid,
+                    vout: vout,
+                    prevout: {value: from_amount, scriptPubKey: ["OP_1", tpubkey]},
+                    sequence: ( sequence ).toString( 16 ).padStart( 8, "0" ),
+                    witness: []
+                  }],
+                  vout: [{
+                    value: to_amount,
+                    scriptPubKey: tapscript.Address.toScriptPubKey(destino)
+                  }],
+                });
+                var sig = tapscript.Signer.taproot.sign(seckey, txdata, 0, { extension: target });
+                console.log( "sig:", sig );
+                txdata.vin[0].witness = [ sig, script, cblock ];
+                console.log( txdata );
+                return tapscript.Tx.encode(txdata).hex;
+            }
+            //use like this:
+            //var contract = getContract();
+            //settleContract( contract[ "privkey1" ], contract[ "pubkey1" ], contract[ "pubkey2" ], 0, contract[ "address" ], 100_000, 99_500, contract[ "ending_blockheight" ], contract[ "ending_timestamp" ], "abababababababababababababababababababababababababababababababab", 1 )
+        </script>
+    </head>
+    <body>
+        <h1>p2bo - onchain hashrate futures</h1>
+        <div>
+        </div>
+        <p>Amount to bet (in sats)</p>
+        <p><input placeholder="5000"></p>
+        <p>Long or short?</p>
+        <p><input placeholder="long"></p>
+        <p><button>Submit</button></p>
+        <script>
+            $( 'button' ).onclick = () => {
+                var div = document.createElement( "div" );
+                div.innerHTML = `
+                    <div class="offer" style="border: 1px solid black; border-radius: 1rem; max-width: 20rem; padding: 1rem;">
+                        <p style="text-align: center; font-weight: bold;">Offer</p>
+                        <p>Amount: ${$$( 'input' )[ 0 ].value} sats</p>
+                        <p>Opponent's position: ${$$( 'input' )[ 1 ].value}</p>
+                        <p><button>Accept</button></p>
+                    </div>
+                `;
+                div.getElementsByTagName( "button" )[ 0 ].onclick = () => {
+                    var contract = getContract();
+                    console.log( contract );
+                    var txid = prompt( `Please enter ${$$( 'input' )[ 0 ].value} sats to this address: ${contract[ "address" ]} and then enter the txid of your deposit` );
+                    var vout = prompt( `Now enter the vout` );
+                    vout = Number( vout );
+                    console.log( txid, vout );
+                    var txhex = settleContract( contract[ "privkey1" ], contract[ "pubkey1" ], contract[ "pubkey2" ], 0, contract[ "address" ], Number( $$( 'input' )[ 0 ].value ), Number( $$( 'input' )[ 0 ].value ) - 500, contract[ "ending_blockheight" ], contract[ "ending_timestamp" ], txid, vout );
+                    var alt_txhex = settleContract( contract[ "privkey2" ], contract[ "pubkey1" ], contract[ "pubkey2" ], 1, contract[ "address" ], Number( $$( 'input' )[ 0 ].value ), Number( $$( 'input' )[ 0 ].value ) - 500, contract[ "ending_blockheight" ], contract[ "ending_timestamp" ], txid, vout );
+                    alert( `Here is your transaction, if 10 blocks go by before 2 weeks are up, you win and you can broadcast it:\n\n${txhex}` );
+                    alert( `And here is your opponent's transaction:\n\n${alt_txhex}` );
+                }
+                $( 'div' ).append( div );
+            }
+        </script>
+    </body>
+</html>
